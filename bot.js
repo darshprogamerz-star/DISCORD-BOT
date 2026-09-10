@@ -49,26 +49,57 @@ function pushHistory(channelId, role, content) {
   while (hist.length > MAX_MEMORY) hist.shift();
 }
 
+// ---------------- GIF cooldown — har baat par GIF nahi ----------------
+const GIF_COOLDOWN_MS = 3 * 60 * 1000; // 3 minute
+const lastAutoGif = new Map(); // channelId -> timestamp
+
 // ============================================================
 //  18+ IMAGE SOURCES
 // ============================================================
 
+// ---------------- Dedupe — repeat GIFs/pics rokne ke liye ----------------
+const recentUrls = new Set();
+const MAX_RECENT = 100;
+function rememberUrl(url) {
+  recentUrls.add(url);
+  if (recentUrls.size > MAX_RECENT) {
+    recentUrls.delete(recentUrls.values().next().value); // sabse purani hatao
+  }
+}
+// fn ko tries baar chalao jab tak nayi (repeat na hui) image na mile
+async function dedupe(fn, tries = 5) {
+  for (let i = 0; i < tries; i++) {
+    const url = await fn();
+    if (!url) return null;
+    if (!recentUrls.has(url)) { rememberUrl(url); return url; }
+  }
+  const url = await fn(); // pool chhota hai — last wala bhej do
+  if (url) rememberUrl(url);
+  return url;
+}
+
 // ---------------- waifu.im (NAYA v5 API — 2026 ke hisaab se) ----------------
-// Purana /search endpoint ab HTML deta hai (isliye "Unexpected token <" aata tha).
 // Naya: GET https://api.waifu.im/images?IsNsfw=True&IsAnimated=True -> { items: [{ url, ... }] }
+// 30 ek saath lekar unme se random unseen choose karte hain (repeat kam)
 async function fetchWaifu(nsfw = false, wantGif = false) {
   try {
     const params = new URLSearchParams({
       IsNsfw: nsfw ? "True" : "False",
       IsAnimated: wantGif ? "True" : "False",
+      PageSize: "30",
     });
     const res = await fetch(`https://api.waifu.im/images?${params}`, {
       headers: { "Accept-Version": "v5" },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const img = data.items?.[0];
-    return img?.url || null;
+    const all = (data.items || []).map((i) => i.url).filter(Boolean);
+    if (!all.length) return null;
+    const fresh = all.filter((u) => !recentUrls.has(u));
+    const pool = fresh.length ? fresh : all;
+    const url = pool[Math.floor(Math.random() * pool.length)];
+    rememberUrl(url);
+    return url;
   } catch (err) {
     console.error("waifu.im error:", err?.message || err);
     return null;
@@ -77,27 +108,36 @@ async function fetchWaifu(nsfw = false, wantGif = false) {
 
 // ---------------- nekos.moe (booru fallback) ----------------
 async function fetchNekosMoe() {
-  try {
-    const res = await fetch("https://nekos.moe/api/v1/random/image?nsfw=true&count=1");
-    const data = await res.json();
-    const img = data.images?.[0];
-    return img ? `https://nekos.moe/image/${img.id}.jpg` : null;
-  } catch (err) {
-    console.error("nekos.moe error:", err?.message || err);
-    return null;
-  }
+  return dedupe(async () => {
+    try {
+      const res = await fetch("https://nekos.moe/api/v1/random/image?nsfw=true&count=1");
+      const data = await res.json();
+      const img = data.images?.[0];
+      return img ? `https://nekos.moe/image/${img.id}.jpg` : null;
+    } catch (err) {
+      console.error("nekos.moe error:", err?.message || err);
+      return null;
+    }
+  }, 3);
 }
 
 // ---------------- hmtai (18,100+ NSFW pics) ----------------
 async function fetchHentai(category, wantGif) {
   if (wantGif) {
-    try { return await hmtai.nsfw.gif(); } catch (err) { console.error("hmtai gif error:", err?.message); }
+    // hmtai gif pool chhota hai — dedupe se repeats skip karo
+    return dedupe(async () => {
+      try { return await hmtai.nsfw.gif(); } catch (err) { console.error("hmtai gif error:", err?.message); return null; }
+    }, 4);
   }
-  try {
-    if (category && typeof hmtai.nsfw[category] === "function") {
-      return await hmtai.nsfw[category]();
-    }
-  } catch (err) { console.error("hmtai error:", err?.message); }
+  const url = await dedupe(async () => {
+    try {
+      if (category && typeof hmtai.nsfw[category] === "function") {
+        return await hmtai.nsfw[category]();
+      }
+    } catch (err) { console.error("hmtai error:", err?.message); }
+    return null;
+  }, 3);
+  if (url) return url;
   return await fetchNekosMoe(); // fallback — hmtai fail ho to booru se
 }
 
@@ -145,13 +185,18 @@ async function extractImages(replyText, isNsfwChannel) {
   return { text, files };
 }
 
-async function extractGifs(replyText, isNsfwChannel) {
+async function extractGifs(replyText, isNsfwChannel, channelId) {
   const files = [];
   const tagRegex = /\[GIF:\s*([^\]]+)\]/gi;
   const tags = [...replyText.matchAll(tagRegex)];
   const text = replyText.replace(tagRegex, "").trim();
 
   if (tags.length) {
+    // Cooldown — 3 minute ke andar GIF bhej chuke to skip (har baat par GIF nahi)
+    const now = Date.now();
+    if (now - (lastAutoGif.get(channelId) || 0) < GIF_COOLDOWN_MS) {
+      return { text, files };
+    }
     let gif = null;
     if (isNsfwChannel) {
       // NSFW channel — hmtai se 18+ GIF (no key), fail ho to waifu.im animated
@@ -160,15 +205,18 @@ async function extractGifs(replyText, isNsfwChannel) {
       // Normal channel — SFW animated GIF (no key)
       gif = (await fetchTenor(tags[0][1])) || (await fetchWaifu(false, true));
     }
-    if (gif) files.push(gif);
+    if (gif) {
+      files.push(gif);
+      lastAutoGif.set(channelId, now);
+    }
   }
   return { text, files };
 }
 
 // LLM reply -> clean text + files (images + gifs)
-async function buildReply(llmReply, isNsfwChannel) {
+async function buildReply(llmReply, isNsfwChannel, channelId) {
   let { text, files } = await extractImages(llmReply, isNsfwChannel);
-  const gifResult = await extractGifs(text, isNsfwChannel);
+  const gifResult = await extractGifs(text, isNsfwChannel, channelId);
   text = gifResult.text;
   files.push(...gifResult.files);
   return { text, files };
@@ -286,7 +334,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply();
       const userText = interaction.options.getString("message");
       const llmReply = await chatWithLLM(channelId, userText, isNsfwChannel);
-      const { text, files } = await buildReply(llmReply, isNsfwChannel);
+      const { text, files } = await buildReply(llmReply, isNsfwChannel, channelId);
       pushHistory(channelId, "user", userText);
       pushHistory(channelId, "assistant", text);
       if (files.length) {
@@ -368,7 +416,7 @@ client.on("messageCreate", async (message) => {
       message.cleanContent.replace(/<@!?\d+>/g, "").trim() || "Hi Pari!";
 
     const llmReply = await chatWithLLM(channelId, userText, isNsfwChannel);
-    const { text, files } = await buildReply(llmReply, isNsfwChannel);
+    const { text, files } = await buildReply(llmReply, isNsfwChannel, channelId);
 
     pushHistory(channelId, "user", userText);
     pushHistory(channelId, "assistant", text);
