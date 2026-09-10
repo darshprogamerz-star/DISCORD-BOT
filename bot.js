@@ -1,5 +1,5 @@
 // ============================================
-// bot.js — Pari Final (COMPLETE)
+// bot.js — Pari Final (COMPLETE — crash fixed)
 // Fixes: strict category mapping, cooldown sirf
 // auto-GIF par, GIF fallback chain + failure logs
 // ============================================
@@ -49,7 +49,10 @@ function isNsfwContext(channel) {
 }
 
 // ---------------- waifu.im (v5 API) ----------------
-async function fetchWaifu({ nsfw = false, animated = false, tag = "waifu" } = {}) {
+async function fetchWaifu(options) {
+  const nsfw = options?.nsfw || false;
+  const animated = options?.animated || false;
+  const tag = options?.tag || "waifu";
   try {
     const params = new URLSearchParams({
       IsNsfw: nsfw ? "True" : "False",
@@ -62,8 +65,8 @@ async function fetchWaifu({ nsfw = false, animated = false, tag = "waifu" } = {}
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const items = data.items || [];
-    const urls = items.map((i) => i.url).filter(Boolean);
-    const fresh = urls.filter((u) => !recentUrls.has(u));
+    const urls = items.map(function (i) { return i.url; }).filter(Boolean);
+    const fresh = urls.filter(function (u) { return !recentUrls.has(u); });
     const pool = fresh.length ? fresh : urls;
     if (!pool.length) return null;
     return pool[Math.floor(Math.random() * pool.length)];
@@ -131,7 +134,7 @@ async function fetchImage(tag, nsfwAllowed) {
       // SFW image
       url = await fetchWaifu({ nsfw: false, tag: clean });
       if (!url) url = await fetchNekosMoe(false);
-ecchi      if (!url) url = fetchHmtai(clean) || null;
+      if (!url) url = fetchHmtai(clean) || null;
     } else {
       // 18+ image — sirf allowed context mein
       if (!nsfwAllowed) return { blocked: true };
@@ -184,13 +187,14 @@ async function askLLM(systemPrompt, history) {
     },
     body: JSON.stringify({
       model: config.LLM_MODEL,
-      messages: [{ role: "system", content: systemPrompt }, ...history],
+      messages: [{ role: "system", content: systemPrompt }].concat(history),
       max_tokens: 500,
       temperature: 0.9,
     }),
   });
   if (!res.ok) {
-    throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const errText = await res.text();
+    throw new Error(`LLM HTTP ${res.status}: ${errText.slice(0, 200)}`);
   }
   const data = await res.json();
   return data.choices?.[0]?.message?.content || null;
@@ -198,14 +202,19 @@ async function askLLM(systemPrompt, history) {
 
 // ---------------- Tag parser ----------------
 function parseTags(text) {
-  const images = [...text.matchAll(/\[IMG:([a-zA-Z]+)\]/g)].map((m) => m[1]);
-  const gifs = [...text.matchAll(/\[GIF:([a-zA-Z]+)\]/g)].map((m) => m[1]);
+  const images = [];
+  const gifs = [];
+  const imgRegex = /\[IMG:([a-zA-Z]+)\]/g;
+  const gifRegex = /\[GIF:([a-zA-Z]+)\]/g;
+  let m;
+  while ((m = imgRegex.exec(text)) !== null) images.push(m[1]);
+  while ((m = gifRegex.exec(text)) !== null) gifs.push(m[1]);
   const clean = text.replace(/\[(IMG|GIF):[a-zA-Z ]+\]/g, "").trim();
   return { clean, images, gifs };
 }
 
 // ---------------- Chat handler ----------------
-client.on(Events.MessageCreate, async (message) => {
+client.on(Events.MessageCreate, async function (message) {
   try {
     if (message.author.bot) return;
 
@@ -218,9 +227,9 @@ client.on(Events.MessageCreate, async (message) => {
     const modeLine = nsfwAllowed
       ? "CURRENT CHANNEL MODE: 18+ mode ON"
       : "CURRENT CHANNEL MODE: SFW mode";
-    const system = `${config.PERSONA}\n\n${modeLine}`;
+    const system = config.PERSONA + "\n\n" + modeLine;
 
-    const chatKey = isDM ? `dm-${message.author.id}` : message.channel.id;
+    const chatKey = isDM ? "dm-" + message.author.id : message.channel.id;
     const history = chatMemory.get(chatKey) || [];
     history.push({
       role: "user",
@@ -241,11 +250,11 @@ client.on(Events.MessageCreate, async (message) => {
     history.push({ role: "assistant", content: raw });
     chatMemory.set(chatKey, history);
 
-    const { clean, images, gifs } = parseTags(raw);
-    if (clean) await message.reply(clean);
+    const parsed = parseTags(raw);
+    if (parsed.clean) await message.reply(parsed.clean);
 
     // ---- Auto-GIFs: cooldown SIRF yahan lagta hai ----
-    const autoGifKeyword = gifs[0]; // max 1 auto-GIF per message
+    const autoGifKeyword = parsed.gifs[0]; // max 1 auto-GIF per message
     if (autoGifKeyword) {
       const now = Date.now();
       const last = lastAutoGifAt.get(message.channel.id) || 0;
@@ -265,7 +274,8 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     // ---- Images (strict category) ----
-    for (const tag of images.slice(0, config.MAX_IMAGES_PER_REPLY)) {
+    const imageTags = parsed.images.slice(0, config.MAX_IMAGES_PER_REPLY);
+    for (const tag of imageTags) {
       const result = await fetchImage(tag, nsfwAllowed);
       if (result.blocked) {
         await message.channel.send(
@@ -292,12 +302,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName("waifu")
     .setDescription("Pari se ek pic maango")
-    .addStringOption((opt) => {
+    .addStringOption(function (opt) {
       opt.setName("type").setDescription("Kaisi pic?").setRequired(true);
       [
         "waifu", "neko", "hentai", "anal", "boobs",
         "pussy", "blowjob", "cum", "masturbation",
-      ].forEach((t) => opt.addChoices({ name: t, value: t }));
+      ].forEach(function (t) {
+        opt.addChoices({ name: t, value: t });
+      });
       return opt;
     }),
   new SlashCommandBuilder()
@@ -306,9 +318,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName("reset")
     .setDescription("Pari ki chat memory reset karo"),
-].map((c) => c.toJSON());
+].map(function (c) { return c.toJSON(); });
 
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on(Events.InteractionCreate, async function (interaction) {
   try {
     if (!interaction.isChatInputCommand()) return;
     const nsfwAllowed = isNsfwContext(interaction.channel);
@@ -359,7 +371,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.commandName === "reset") {
       const chatKey = interaction.guild
         ? interaction.channel.id
-        : `dm-${interaction.user.id}`;
+        : "dm-" + interaction.user.id;
       chatMemory.delete(chatKey);
       await interaction.reply(
         "Memory reset ho gayi ✨ ab fresh shuru karein~ 💕"
@@ -372,7 +384,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.replied) {
         await interaction.editReply("Arey 🥺 kuch technical problem ho gayi...");
       }
-    } catch (_) {}
+    } catch (e2) {
+      // ignore
+    }
   }
 });
 
@@ -386,7 +400,7 @@ async function boot() {
     await rest.put(Routes.applicationCommands(client.user.id), {
       body: commands,
     });
-    console.log(`✅ Pari online hai — ${client.user.tag} (${client.user.id})`);
+    console.log("✅ Pari online hai — " + client.user.tag + " (" + client.user.id + ")");
   } catch (err) {
     console.error("Command registration error:", err?.message || err);
   }
