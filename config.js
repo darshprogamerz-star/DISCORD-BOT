@@ -15,6 +15,19 @@ module.exports = {
   // --- Tenor GIFs (optional — nahi hai to /gif off rahega, baaki sab chalega) ---
   tenorApiKey: process.env.TENOR_API_KEY || "",
 
+  // --- 18+ Channels (Discord ka Age-Restricted toggle zaroori NAHI!) ---
+  // 18+ content sirf in channels mein + DM mein chalega
+  // Channel names (comma se alag, chhota-bada farak nahi padta) — default: 18plus
+  nsfwChannelNames: (process.env.NSFW_CHANNEL_NAMES || "18plus")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+  // Channel IDs (optional, zyada reliable — Developer Mode ON karke Copy Channel ID)
+  nsfwChannelIds: (process.env.NSFW_CHANNEL_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+
   // --- Bot identity ---
   botName: "Pari",
 
