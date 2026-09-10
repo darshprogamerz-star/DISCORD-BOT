@@ -145,14 +145,21 @@ async function extractImages(replyText, isNsfwChannel) {
   return { text, files };
 }
 
-async function extractGifs(replyText) {
+async function extractGifs(replyText, isNsfwChannel) {
   const files = [];
   const tagRegex = /\[GIF:\s*([^\]]+)\]/gi;
   const tags = [...replyText.matchAll(tagRegex)];
   const text = replyText.replace(tagRegex, "").trim();
 
   if (tags.length) {
-    const gif = await fetchTenor(tags[0][1]);
+    let gif = null;
+    if (isNsfwChannel) {
+      // NSFW channel — hmtai se 18+ GIF (no key), fail ho to waifu.im animated
+      gif = (await fetchHentai(null, true)) || (await fetchWaifu(true, true));
+    } else {
+      // Normal channel — SFW animated GIF (no key)
+      gif = (await fetchTenor(tags[0][1])) || (await fetchWaifu(false, true));
+    }
     if (gif) files.push(gif);
   }
   return { text, files };
@@ -161,7 +168,7 @@ async function extractGifs(replyText) {
 // LLM reply -> clean text + files (images + gifs)
 async function buildReply(llmReply, isNsfwChannel) {
   let { text, files } = await extractImages(llmReply, isNsfwChannel);
-  const gifResult = await extractGifs(text);
+  const gifResult = await extractGifs(text, isNsfwChannel);
   text = gifResult.text;
   files.push(...gifResult.files);
   return { text, files };
@@ -291,11 +298,14 @@ client.on("interactionCreate", async (interaction) => {
     // ---------------- /gif ----------------
     if (interaction.commandName === "gif") {
       await interaction.deferReply();
-      if (!config.tenorApiKey) {
-        return interaction.editReply("Uff~ 🥺 GIF nahi mili, dobara try karo na!");
+      let gif = null;
+      if (isNsfwChannel) {
+        // NSFW channel — hmtai se 18+ GIF (no key)
+        gif = await fetchHentai(null, true);
+      } else {
+        // Normal channel — waifu.im se SFW animated GIF (no key, Tenor ab discontinued hai)
+        gif = await fetchWaifu(false, true);
       }
-      const query = interaction.options.getString("query") || "cute anime";
-      const gif = await fetchTenor(query);
       if (gif) return interaction.editReply({ content: "Ye lo~ 🎬✨", files: [gif] });
       return interaction.editReply("Uff~ 🥺 GIF nahi mili, dobara try karo na!");
     }
