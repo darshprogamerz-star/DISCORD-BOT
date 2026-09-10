@@ -1,17 +1,17 @@
 {
   "name": "pari-bot",
   "version": "1.0.0",
-  "description": "Cute anime girl companion bot - Hindi/Hinglish/English",
+  "description": "Pari — cute anime girl companion bot (Hindi/Hinglish/English, NSFW-gated)",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5",
+    "hmtai": "^3.2.3",
     "openai": "^4.70.0"
   }
 }
