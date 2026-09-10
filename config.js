@@ -1,5 +1,6 @@
 /**
- * Pari Bot Configuration
+ * Pari Bot Configuration ✅ (Fixed)
+ * Model updated: openai/gpt-oss-120b (purana llama-3.3-70b-versatile 16 Aug 2026 ko band ho gaya)
  * Saare variables .env / Railway Variables se aate hain
  */
 
@@ -7,12 +8,13 @@ require("dotenv").config();
 
 module.exports = {
   // ---- Required ----
-  discordToken: process.env.DISCORD_TOKEN,        // Discord Developer Portal se
-  llmApiKey: process.env.LLM_API_KEY,             // Groq (free) ya OpenAI key
+  discordToken: process.env.DISCORD_TOKEN,        // Discord Developer Portal → Bot → Reset Token
+  llmApiKey: process.env.LLM_API_KEY,             // Groq (free) key: console.groq.com/keys
 
   // ---- Optional (defaults: Groq free API) ----
   llmBaseUrl: process.env.LLM_BASE_URL || "https://api.groq.com/openai/v1",
-  llmModel: process.env.LLM_MODEL || "llama-3.3-70b-versatile",
+  llmModel: process.env.LLM_MODEL || "openai/gpt-oss-120b",   // ✅ FIXED — naya active model
+  // Alternatives: "qwen/qwen3.6-27b" (halka) | "openai/gpt-oss-20b" (sabse fast)
 
   // ---- Personality tuning ----
   maxHistory: parseInt(process.env.MAX_HISTORY || "12", 10), // kitne messages yaad rakhe
