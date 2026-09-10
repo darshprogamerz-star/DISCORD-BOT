@@ -291,6 +291,12 @@ const commands = [
           { name: "😵‍💫 Ahegao", value: "ahegao" },
           { name: "👯 Yuri", value: "yuri" },
           { name: "🐱 NSFW Neko", value: "nsfwNeko" },
+          { name: "🍑 Anal", value: "anal" },
+          { name: "🎀 Boobs", value: "boobs" },
+          { name: "🐱 Pussy", value: "pussy" },
+          { name: "👄 Blowjob", value: "blowjob" },
+          { name: "💧 Cum", value: "cum" },
+          { name: "✋ Masturbation", value: "masturbation" },
           { name: "🎞️ Hentai GIF", value: "hentai_gif" },
           { name: "🖼️ Booru random", value: "booru" }
         )
