@@ -174,51 +174,72 @@ async function fetchNekosMoe() {
 // ---------------- nekos.moe TAGGED — specific category ke liye ----------------
 // Ye hi ASLI FIX hai: "boobs" maango to nekos.moe par "boobs" TAG se
 // search hota hai — random image kabhi nahi jayegi!
-async function fetchNekosMoeTagged(tag) {
-  return dedupe(async () => {
-    try {
-      const res = await fetch("https://nekos.moe/api/v1/random/image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nsfw: true, tags: [tag] }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const img = data.images?.[0];
-      if (!img) return null;
-      console.log(`nekos.moe tagged "${tag}" se image mili ✅`);
-      return `https://nekos.moe/image/${img.id}.jpg`;
-    } catch (err) {
-      console.error(`nekos.moe tagged "${tag}" error:`, err?.message || err);
-      return null;
-    }
-  }, 3);
+async function fetchNekosMoeTagged(tagList) {
+  const tags = Array.isArray(tagList) ? tagList : [tagList];
+  for (const tag of tags) {
+    const url = await dedupe(async () => {
+      try {
+        const res = await fetch("https://nekos.moe/api/v1/random/image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nsfw: true, tags: [tag] }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const img = data.images?.[0];
+        if (!img) return null;
+        console.log(`nekos.moe tagged "${tag}" se image mili ✅`);
+        return `https://nekos.moe/image/${img.id}.jpg`;
+      } catch (err) {
+        console.error(`nekos.moe tagged "${tag}" error:`, err?.message || err);
+        return null;
+      }
+    }, 3);
+    if (url) return url;
+  }
+  return null;
 }
 
 // ---------------- hmtai — case-insensitive + alias lookup ----------------
 // Aliases: hmtai ke asli category names alag ho sakte hain, inme se koi ek match hoga
 const HMTAI_ALIASES = {
-  boobs: ["boobs", "boob", "tits", "oppai"],
-  anal: ["anal", "ass"],
-  pussy: ["pussy", "cunt", "h"],
-  blowjob: ["blowjob", "bj", "oral"],
-  cum: ["cum", "cumshot"],
-  masturbation: ["masturbation", "solo"],
-  hentai: ["hentai"],
-  ero: ["ero", "erotic"],
-  ahegao: ["ahegao"],
-  yuri: ["yuri"],
-  nsfwNeko: ["nsfwNeko", "nsfw_neko", "lewdneko", "lewd"],
+  boobs: ["boobs", "boob", "tits", "breasts", "oppai", "big_boobs"],
+  anal: ["anal", "ass", "anus"],
+  pussy: ["pussy", "cunt", "vagina"],
+  blowjob: ["blowjob", "bj", "oral", "fellatio"],
+  cum: ["cum", "cumshot", "semen"],
+  masturbation: ["masturbation", "solo", "fingering"],
+  hentai: ["hentai", "sex", "nsfw"],
+  ero: ["ero", "erotic", "sexy"],
+  ahegao: ["ahegao", "ecchi"],
+  yuri: ["yuri", "lesbian"],
+  nsfwNeko: ["nsfwNeko", "nsfw_neko", "lewdneko", "lewd", "lewdNeko"],
+};
+
+// nekos.moe booru tags — user category ke hisaab se kaunse tags try karne hain
+const BOORU_TAGS = {
+  boobs: ["boobs", "breasts", "large_breasts", "nipples", "nude"],
+  anal: ["anal", "anus", "nude"],
+  pussy: ["pussy", "vagina", "nude"],
+  blowjob: ["blowjob", "oral", "fellatio", "nude"],
+  cum: ["cum", "cumshot", "nude"],
+  masturbation: ["masturbation", "solo", "nude"],
+  hentai: ["hentai", "sex", "nude"],
+  ero: ["sexy", "swimsuit", "cleavage"],
+  ahegao: ["ahegao", "nude"],
+  yuri: ["yuri", "nude"],
+  nsfwNeko: ["animal_ears", "nude"],
 };
 
 function getHmtaiCategoryFn(category) {
   const candidates = HMTAI_ALIASES[category] || [category];
   const keys = Object.keys(hmtaiNsfw);
   for (const cand of candidates) {
-    // Case-insensitive match — nsfwNeko jaise keys ab miss nahi hongi
-    const match = keys.find(
-      (k) => k.toLowerCase() === cand.toLowerCase()
-    );
+    // Pehle exact match, phir substring match (jaise "boobs" vs key "big_boobs")
+    let match = keys.find((k) => k.toLowerCase() === cand.toLowerCase());
+    if (!match) {
+      match = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+    }
     if (match && typeof hmtaiNsfw[match] === "function") {
       return hmtaiNsfw[match];
     }
@@ -263,7 +284,9 @@ async function fetchHentai(category, wantGif) {
       );
     }
     // hmtai fail → nekos.moe TAGGED search (random NAHI — yahi pehle bug tha!)
-    const tagged = await fetchNekosMoeTagged(category);
+    const tagged = await fetchNekosMoeTagged(
+      BOORU_TAGS[category] || BOORU_TAGS[category.toLowerCase()] || [category]
+    );
     if (tagged) return tagged;
     console.warn(
       `category "${category}" dono sources mein nahi mili — fallback "hentai"`
