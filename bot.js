@@ -234,7 +234,10 @@ const commands = [
 // ============================================================
 //  READY — commands register
 // ============================================================
-client.once("ready", async () => {
+let booted = false;
+async function startBot() {
+  if (booted) return; // ready + clientReady dono fire ho to double na ho
+  booted = true;
   try {
     const rest = new REST({ version: "10" }).setToken(config.discordToken);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -242,7 +245,10 @@ client.once("ready", async () => {
   } catch (err) {
     console.error("❌ Command register error:", err);
   }
-});
+}
+// discord.js v14.19+ mein "ready" deprecated hai — dono events lagaye hain, har version mein chalega
+client.once("clientReady", startBot);
+client.once("ready", startBot);
 
 // ============================================================
 //  SLASH COMMAND HANDLER
