@@ -1,5 +1,5 @@
 // ============================================
-// config.js — Pari Config (Final)
+// config.js — Pari Config (COMPLETE)
 // ============================================
 
 module.exports = {
