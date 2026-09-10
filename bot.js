@@ -1,5 +1,5 @@
 // ============================================
-// bot.js — Pari Final
+// bot.js — Pari Final (COMPLETE)
 // Fixes: strict category mapping, cooldown sirf
 // auto-GIF par, GIF fallback chain + failure logs
 // ============================================
@@ -131,7 +131,7 @@ async function fetchImage(tag, nsfwAllowed) {
       // SFW image
       url = await fetchWaifu({ nsfw: false, tag: clean });
       if (!url) url = await fetchNekosMoe(false);
-      if (!url) url = fetchHmtai(clean === "neko" ? "neko" : "waifu") || null;
+ecchi      if (!url) url = fetchHmtai(clean) || null;
     } else {
       // 18+ image — sirf allowed context mein
       if (!nsfwAllowed) return { blocked: true };
@@ -250,14 +250,16 @@ client.on(Events.MessageCreate, async (message) => {
       const now = Date.now();
       const last = lastAutoGifAt.get(message.channel.id) || 0;
       if (now - last < config.AUTO_GIF_COOLDOWN) {
-        console.log("Auto-GIF skipped: cooldown active (user-requested /gif par cooldown nahi lagta)");
+        console.log(
+          "Auto-GIF skipped: cooldown active (/gif command par cooldown nahi lagta)"
+        );
       } else {
         const gifUrl = await fetchGif(nsfwAllowed);
         if (gifUrl) {
           lastAutoGifAt.set(message.channel.id, now);
           await message.channel.send(gifUrl);
         } else {
-          console.error("Auto-GIF fetch failed — logs upar dekho");
+          console.error("Auto-GIF fetch failed — upar ka log dekho");
         }
       }
     }
@@ -292,9 +294,10 @@ const commands = [
     .setDescription("Pari se ek pic maango")
     .addStringOption((opt) => {
       opt.setName("type").setDescription("Kaisi pic?").setRequired(true);
-      ["waifu", "neko", "hentai", "anal", "boobs", "pussy", "blowjob", "cum", "masturbation"].forEach(
-        (t) => opt.addChoices({ name: t, value: t })
-      );
+      [
+        "waifu", "neko", "hentai", "anal", "boobs",
+        "pussy", "blowjob", "cum", "masturbation",
+      ].forEach((t) => opt.addChoices({ name: t, value: t }));
       return opt;
     }),
   new SlashCommandBuilder()
@@ -330,7 +333,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       if (!result.url) {
-        await interaction.editReply("Uff~ 🥺 abhi sources busy hain, thodi der baad try karo~");
+        await interaction.editReply(
+          "Uff~ 🥺 abhi sources busy hain, thodi der baad try karo~"
+        );
         return;
       }
       await interaction.editReply(result.url);
@@ -342,7 +347,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferReply();
       const gifUrl = await fetchGif(nsfwAllowed);
       if (!gifUrl) {
-        await interaction.editReply("Uff~ 🥺 abhi GIF sources busy hain, thodi der baad try karo na~ 💕");
+        await interaction.editReply(
+          "Uff~ 🥺 abhi GIF sources busy hain, thodi der baad try karo na~ 💕"
+        );
         return;
       }
       await interaction.editReply(gifUrl);
@@ -354,13 +361,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? interaction.channel.id
         : `dm-${interaction.user.id}`;
       chatMemory.delete(chatKey);
-      await interaction.reply("Memory reset ho gayi ✨ ab fresh shuru karein~ 💕");
+      await interaction.reply(
+        "Memory reset ho gayi ✨ ab fresh shuru karein~ 💕"
+      );
       return;
     }
   } catch (err) {
     console.error("Interaction error:", err?.message || err);
     try {
-      if (interaction.deferred || !interaction.replied) {
+      if (!interaction.replied) {
         await interaction.editReply("Arey 🥺 kuch technical problem ho gayi...");
       }
     } catch (_) {}
@@ -374,43 +383,26 @@ async function boot() {
   booted = true;
   try {
     const rest = new REST({ version: "10" }).setToken(config.DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commands,
+    });
     console.log(`✅ Pari online hai — ${client.user.tag} (${client.user.id})`);
-```
-
-<artifact identifier="pari-bot-js" type="update">
-<old_str>    console.log(`✅ Pari online hai — ${client.user.tag} (${client.user.id})`);
   } catch (err) {
     console.error("Command registration error:", err?.message || err);
   }
 }
 
-// Purana "ready" event (deprecated warning deta hai) + naya "clientReady" — dono par lagaya, booted flag se double-registration nahi hogi
+// Purana "ready" (deprecated warning deta hai) + naya "clientReady" —
+// dono par lagaya, booted flag se double-registration nahi hogi
 client.on("ready", boot);
 client.on("clientReady", boot);
 
 // ---------------- Start ----------------
 if (!config.DISCORD_TOKEN || !config.LLM_API_KEY) {
-  console.error("❌ DISCORD_TOKEN ya LLM_API_KEY missing hai — Railway Variables check karo!");
+  console.error(
+    "❌ DISCORD_TOKEN ya LLM_API_KEY missing hai — Railway Variables check karo!"
+  );
   process.exit(1);
 }
 
-client.login(config.DISCORD_TOKEN);</old_str>
-</new_str>    console.log(`✅ Pari online hai — ${client.user.tag} (${client.user.id})`);
-  } catch (err) {
-    console.error("Command registration error:", err?.message || err);
-  }
-}
-
-// Purana "ready" (deprecated) + naya "clientReady" — dono par lagaya,
-// booted flag se double-registration nahi hogi
-client.on("ready", boot);
-client.on("clientReady", boot);
-
-// ---------------- Start ----------------
-if (!config.DISCORD_TOKEN || !config.LLM_API_KEY) {
-  console.error("❌ DISCORD_TOKEN ya LLM_API_KEY missing hai — Railway Variables check karo!");
-  process.exit(1);
-}
-
-client.login(config.DISCORD_TOKEN);</new_str>
+client.login(config.DISCORD_TOKEN);
