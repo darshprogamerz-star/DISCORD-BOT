@@ -1,19 +1,8 @@
-/**
- * Pari 💕 — Cute Anime Girl Companion Bot (FINAL)
- * Hindi / Hinglish / English | 18+ mode ONLY in NSFW channels
- *
- * Features:
- *   💕 AI chat (mention / DM / reply se)
- *   🎬 Tenor GIFs — /gif command + mood-based auto GIFs
- *   🌸 waifu.im anime images/GIFs — /waifu command (18+ sirf NSFW channel mein)
- *   🔄 /reset (memory) aur /mode (current mode check)
- *
- * Environment Variables (Railway → Variables):
- *   DISCORD_TOKEN   (required)
- *   LLM_API_KEY     (required — Groq free)
- *   LLM_MODEL       (optional — default: openai/gpt-oss-120b)
- *   TENOR_API_KEY   (optional — GIFs ke liye)
- */
+// ============================================================
+//  Pari 💕 — Cute Anime Girl Companion Bot
+//  Hindi / Hinglish / English · LLM chat · GIFs · 18+ (NSFW-gated)
+//  Deploy: Railway (node bot.js)
+// ============================================================
 
 const {
   Client,
@@ -24,15 +13,21 @@ const {
   Routes,
 } = require("discord.js");
 const OpenAI = require("openai");
+const HMtai = require("hmtai");
 const config = require("./config.js");
 
-// ---------------- LLM Client ----------------
-const llm = new OpenAI({
+// ---- Startup checks ----
+if (!config.discordToken || !config.llmApiKey) {
+  console.error("❌ DISCORD_TOKEN ya LLM_API_KEY missing hai! Railway → Variables check karo.");
+  process.exit(1);
+}
+
+const hmtai = new HMtai();
+const openai = new OpenAI({
   apiKey: config.llmApiKey,
   baseURL: config.llmBaseUrl,
 });
 
-// ---------------- Discord Client ----------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -43,57 +38,78 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// Per-channel chat memory: Map<channelId, [{role, content}]>
-const history = new Map();
+// ---------------- Memory (per channel, last 12 msgs) ----------------
+const MEMORY_LIMIT = 12;
+const memory = new Map();
 
-// ---------------- Persona ----------------
-function buildSystemPrompt(isNsfwChannel) {
-  let prompt = config.basePersona + (isNsfwChannel ? config.nsfwRules : config.sfwRules);
-
-  if (config.tenorApiKey) {
-    prompt += `
-GIF RULE:
-- Jab mood GIF ke liye perfect ho (hug chahiye, user sad hai, celebrate kar rahe hain,
-  blush kar rahi ho, good morning/night, etc.) to apne reply ke END mein ye tag add karo:
-  [GIF: 2-3 english keywords]
-  Example: [GIF: anime hug] ya [GIF: cute blush]
-- Har message mein GIF nahi — sirf jab actually cute lage. Zyada-tar messages sirf text.
-- Tag ke baad kuch aur na likho.
-`;
-  }
-  return prompt;
+function getMemory(channelId) {
+  if (!memory.has(channelId)) memory.set(channelId, []);
+  return memory.get(channelId);
 }
 
-// ---------------- Tenor GIF Fetch ----------------
-async function fetchGif(query, isNsfw) {
+function pushMemory(channelId, role, content) {
+  const m = getMemory(channelId);
+  m.push({ role, content });
+  while (m.length > MEMORY_LIMIT) m.shift();
+}
+
+// ---------------- System prompt ----------------
+function buildSystemPrompt(isNsfwChannel) {
+  const mode = isNsfwChannel
+    ? "Current channel: NSFW (18+ mode ALLOWED)."
+    : "Current channel: normal (SFW only — 18+ content strictly mana hai, [IMG:cute] ke alawa koi image tag use mat karo).";
+  return `${config.persona}\n\n${mode}`;
+}
+
+// ---------------- LLM ----------------
+async function getLLMReply(channelId, userText, isNsfwChannel) {
+  const messages = [
+    { role: "system", content: buildSystemPrompt(isNsfwChannel) },
+    ...getMemory(channelId),
+    { role: "user", content: userText },
+  ];
+  const res = await openai.chat.completions.create({
+    model: config.llmModel,
+    messages,
+    max_tokens: 300,
+    temperature: 0.9,
+  });
+  const reply = res.choices?.[0]?.message?.content?.trim();
+  if (!reply) throw new Error("Empty LLM response");
+  pushMemory(channelId, "user", userText);
+  pushMemory(channelId, "assistant", reply);
+  return reply;
+}
+
+// ---------------- Tenor GIFs ----------------
+async function fetchGif(query, contentFilter) {
   if (!config.tenorApiKey) return null;
   try {
     const params = new URLSearchParams({
       q: query,
       key: config.tenorApiKey,
       limit: "20",
-      random: "true",
-      contentfilter: isNsfw ? "off" : "high",
-      media_filter: "gif",
+      contentfilter: contentFilter || "high",
+      client_key: "pari_bot",
     });
     const res = await fetch(`https://tenor.googleapis.com/v2/search?${params}`);
     const data = await res.json();
     const results = data.results || [];
     if (!results.length) return null;
     const pick = results[Math.floor(Math.random() * results.length)];
-    return pick.media_formats?.gif?.url || pick.media_formats?.tinygif?.url || null;
+    return pick.media_formats?.gif?.url || pick.media_formats?.mediumgif?.url || null;
   } catch (err) {
     console.error("Tenor error:", err?.message || err);
     return null;
   }
 }
 
-// ---------------- waifu.im — Anime Images/GIFs ----------------
+// ---------------- waifu.im — anime pics/GIFs ----------------
 async function fetchWaifu(isNsfw, wantGif) {
   try {
     const params = new URLSearchParams({
-      is_nsfw: isNsfw ? "true" : "false",
-      gif: wantGif ? "true" : "false",
+      is_nsfw: String(isNsfw),
+      gif: String(wantGif),
       many: "false",
     });
     const res = await fetch(`https://api.waifu.im/search?${params}`);
@@ -105,203 +121,254 @@ async function fetchWaifu(isNsfw, wantGif) {
   }
 }
 
-// Reply se [GIF: ...] tag nikaalo → { text, gifQuery }
-function parseGifTag(reply) {
-  const match = reply.match(/\[GIF:\s*([^\]]+)\]/i);
-  if (!match) return { text: reply, gifQuery: null };
-  return {
-    text: reply.replace(match[0], "").trim(),
-    gifQuery: match[1].trim(),
-  };
-}
-
-// ---------------- LLM Reply ----------------
-async function pariReply(channel, userName, userMsg) {
-  const chId = channel.id;
-  const isNsfw = typeof channel.isNSFW === "function" ? channel.isNSFW() : false;
-
-  if (!history.has(chId)) history.set(chId, []);
-  const hist = history.get(chId);
-
-  hist.push({ role: "user", content: `${userName}: ${userMsg}` });
-
-  const messages = [
-    { role: "system", content: buildSystemPrompt(isNsfw) },
-    ...hist.slice(-config.maxHistory),
-  ];
-
-  let reply;
+// ---------------- nekos.moe — booru-style NSFW ----------------
+async function fetchNekosMoe() {
   try {
-    const res = await llm.chat.completions.create({
-      model: config.llmModel,
-      messages,
-      max_tokens: config.maxTokens,
-      temperature: config.temperature,
-    });
-    reply = res.choices[0].message.content.trim();
+    const res = await fetch("https://nekos.moe/api/v1/random/image?nsfw=true&count=1");
+    const data = await res.json();
+    const img = data.images?.[0];
+    return img ? `https://nekos.moe/image/${img.id}.jpg` : null;
   } catch (err) {
-    console.error("LLM error:", err?.message || err);
-    return { text: "Uff~ 😳 thodi technical dikkat ho gayi, ek baar phir bolo na! ✨", gifUrl: null };
-  }
-
-  hist.push({ role: "assistant", content: reply });
-  while (hist.length > config.maxHistory) hist.shift();
-
-  const { text, gifQuery } = parseGifTag(reply);
-  let gifUrl = null;
-  if (gifQuery && config.tenorApiKey) {
-    gifUrl = await fetchGif(gifQuery, isNsfw);
-  }
-  return { text, gifUrl };
-}
-
-// ---------------- Reply Bhejne ka Helper ----------------
-async function sendPariMessage(channel, result) {
-  if (result.gifUrl) {
-    await channel.send({ content: result.text || undefined, files: [result.gifUrl] });
-  } else {
-    await channel.send(result.text);
+    console.error("nekos.moe error:", err?.message || err);
+    return null;
   }
 }
 
-// ---------------- Slash Commands ----------------
+// ---------------- hmtai — hentai categories (with fallback) ----------------
+async function fetchHentai(category, wantGif) {
+  if (wantGif) {
+    try {
+      return await hmtai.nsfw.gif();
+    } catch (err) {
+      console.error("hmtai gif error:", err?.message || err);
+    }
+  }
+  try {
+    if (category && typeof hmtai.nsfw[category] === "function") {
+      return await hmtai.nsfw[category]();
+    }
+  } catch (err) {
+    console.error("hmtai error:", err?.message || err);
+  }
+  return await fetchNekosMoe(); // fallback — hmtai fail ho to booru se
+}
+
+// ---------------- [IMG:...] / [GIF:...] tag parser ----------------
+async function extractImages(replyText, isNsfwChannel) {
+  const files = [];
+
+  // Image tags
+  const imgRegex = /\[IMG:([a-zA-Z_]+)\]/g;
+  const imgTags = [...replyText.matchAll(imgRegex)];
+  let text = replyText.replace(imgRegex, "").trim();
+
+  for (const [, rawCat] of imgTags.slice(0, 2)) { // max 2 pics per reply
+    const cat = rawCat.toLowerCase();
+    let url = null;
+    if (cat === "cute") {
+      url = await fetchWaifu(false, false);
+    } else if (isNsfwChannel) {
+      if (cat === "gif") url = await fetchWaifu(true, true);
+      else if (cat === "nsfw_pic") url = await fetchWaifu(true, false);
+      else if (cat === "booru") url = await fetchNekosMoe();
+      else if (cat === "hentai_gif") url = await fetchHentai(null, true);
+      else url = await fetchHentai(cat, false); // hentai, ero, ahegao, yuri, nsfwNeko
+    }
+    if (url) files.push(url);
+  }
+
+  // Auto-GIF tag
+  const gifRegex = /\[GIF:\s*([^\]]+)\]/i;
+  const gifMatch = text.match(gifRegex);
+  if (gifMatch) {
+    text = text.replace(gifRegex, "").trim();
+    const filter = isNsfwChannel ? "off" : "high";
+    const url = await fetchGif(gifMatch[1].trim(), filter);
+    if (url) files.push(url);
+  }
+
+  return { text, files };
+}
+
+// ---------------- Reply sender (text + files) ----------------
+async function sendPariReply(target, llmReply, isNsfwChannel) {
+  const { text, files } = await extractImages(llmReply, isNsfwChannel);
+  const payload = { content: text || "Ye lo~ 🌸✨" };
+  if (files.length) payload.files = files;
+  await target.send(payload);
+}
+
+// ---------------- Slash commands ----------------
 const commands = [
   new SlashCommandBuilder()
     .setName("chat")
     .setDescription("Pari se baat karo 💕")
     .addStringOption((opt) =>
-      opt.setName("message").setDescription("Pari ko kya kehna hai?").setRequired(true)
+      opt.setName("message").setDescription("Kya kehna hai?").setRequired(true)
     ),
+
+  new SlashCommandBuilder()
+    .setName("reset")
+    .setDescription("Pari ki memory reset karo 🔄"),
+
+  new SlashCommandBuilder()
+    .setName("mode")
+    .setDescription("Is channel ka current mode check karo"),
+
   new SlashCommandBuilder()
     .setName("gif")
-    .setDescription("Pari se GIF mangwao 🎬")
+    .setDescription("Pari ek GIF bhejegi 🎬")
     .addStringOption((opt) =>
-      opt.setName("query").setDescription("Kaunsi GIF? (jaise: cute hug, happy dance)").setRequired(true)
+      opt.setName("query").setDescription("Kaunsi GIF? (jaise: cute hug)").setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("waifu")
-    .setDescription("Pari ek anime waifu pic/gif bhejegi 🌸 (18+ sirf NSFW channel mein)")
+    .setDescription("Pari anime pic/GIF bhejegi (NSFW channel mein 18+ milta hai) 🌸")
     .addStringOption((opt) =>
-      opt.setName("type").setDescription("Kya chahiye?")
-        .addChoices(
-          { name: "🌸 Cute pic (SFW)", value: "sfw_pic" },
-          { name: "😳 18+ pic", value: "nsfw_pic" },
-          { name: "🎬 18+ GIF", value: "nsfw_gif" },
-        )
+      opt.setName("type").setDescription("Kya chahiye?").addChoices(
+        { name: "🌸 Cute pic (SFW)", value: "sfw_pic" },
+        { name: "😳 18+ pic", value: "nsfw_pic" },
+        { name: "🎬 18+ GIF", value: "nsfw_gif" },
+        { name: "💦 Hentai", value: "hentai" },
+        { name: "🔥 Ero", value: "ero" },
+        { name: "😵‍💫 Ahegao", value: "ahegao" },
+        { name: "👯 Yuri", value: "yuri" },
+        { name: "🐱 NSFW Neko", value: "nsfwNeko" },
+        { name: "🎞️ Hentai GIF", value: "hentai_gif" },
+        { name: "🖼️ Booru random", value: "booru" }
+      )
     ),
-  new SlashCommandBuilder().setName("reset").setDescription("Pari ki memory reset karo (is channel mein)"),
-  new SlashCommandBuilder().setName("mode").setDescription("Check karo Pari ka current mode"),
-].map((c) => c.toJSON());
+];
 
-// ---------------- Ready ----------------
-client.once("ready", async () => {
-  console.log(`✅ Pari online hai — ${client.user.tag}`);
-  if (!config.tenorApiKey) console.log("⚠️ TENOR_API_KEY set nahi hai — Tenor GIFs off hain (/waifu phir bhi chalega)");
+// ---------------- Ready → register commands ----------------
+client.once("clientReady", async () => {
   try {
-    await new REST({ version: "10" }).put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
-    );
-    console.log("✅ Slash commands registered!");
+    const rest = new REST({ version: "10" }).setToken(config.discordToken);
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commands.map((c) => c.toJSON()),
+    });
+    console.log(`✅ Pari online hai — ${client.user.tag}`);
   } catch (err) {
-    console.error("Slash register error:", err);
+    console.error("❌ Command registration error:", err);
   }
-  client.user.setActivity("aapke messages 💕", { type: 3 });
 });
 
-// ---------------- Auto Chat (mention / DM / reply) ----------------
+// ---------------- Messages (mention ya DM par reply) ----------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  const mentioned = message.mentions.has(client.user);
-  const isDm = !message.guild;
-
-  let isReplyToBot = false;
-  if (message.reference && message.reference.messageId) {
-    try {
-      const ref = await message.fetchReference();
-      isReplyToBot = ref.author.id === client.user.id;
-    } catch (_) {}
-  }
-
-  if (!mentioned && !isDm && !isReplyToBot) return;
-
-  let content = message.content.replace(/<@!?(\d+)>/g, "").trim();
-  if (!content) content = "hehe hi~";
+  const mentioned = message.mentions.users.has(client.user.id);
+  const isDM = !message.guild;
+  if (!mentioned && !isDM) return;
 
   try {
     await message.channel.sendTyping();
-    const result = await pariReply(message.channel, message.author.username, content);
-    await sendPariMessage(message.channel, result);
+    const isNsfwChannel = message.channel.isNSFW?.() ?? false;
+    const userText =
+      message.cleanContent.replace(/<@!?\d+>/g, "").trim() || "hi";
+    const reply = await getLLMReply(message.channel.id, userText, isNsfwChannel);
+    await sendPariReply(message.channel, reply, isNsfwChannel);
   } catch (err) {
-    console.error("Reply error:", err);
+    console.error("LLM error:", err?.message || err);
+    await message
+      .reply("Uff~ 😳 thodi technical dikkat ho gayi, ek baar phir bolo na! ✨")
+      .catch(() => {});
   }
 });
 
-// ---------------- Slash Command Handler ----------------
+// ---------------- Interactions ----------------
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const isNsfw = interaction.channel && interaction.channel.isNSFW();
+  try {
+    const isNsfwChannel = interaction.channel?.isNSFW?.() ?? false;
 
-  if (interaction.commandName === "chat") {
-    await interaction.deferReply();
-    const msg = interaction.options.getString("message");
-    const result = await pariReply(interaction.channel, interaction.user.username, msg);
-    if (result.gifUrl) {
-      await interaction.editReply({ content: result.text || undefined, files: [result.gifUrl] });
-    } else {
-      await interaction.editReply(result.text);
+    // /chat
+    if (interaction.commandName === "chat") {
+      const userText = interaction.options.getString("message");
+      await interaction.deferReply();
+      const reply = await getLLMReply(interaction.channel.id, userText, isNsfwChannel);
+      const { text, files } = await extractImages(reply, isNsfwChannel);
+      const payload = { content: text || "Ye lo~ 🌸✨" };
+      if (files.length) payload.files = files;
+      await interaction.editReply(payload);
+      return;
     }
-  }
 
-  if (interaction.commandName === "gif") {
-    const query = interaction.options.getString("query");
-    await interaction.deferReply();
-    const gifUrl = await fetchGif(query, isNsfw);
-    if (gifUrl) {
-      await interaction.editReply({ content: `Ye lo~ 🎬✨`, files: [gifUrl] });
-    } else {
-      await interaction.editReply(
-        config.tenorApiKey
-          ? "Oops~ 🥺 ye GIF nahi mili, kuch aur try karo na!"
-          : "GIFs ke liye TENOR_API_KEY set karna hoga! 🙈 (Railway Variables mein)"
+    // /reset
+    if (interaction.commandName === "reset") {
+      memory.delete(interaction.channel.id);
+      await interaction.reply("Memory reset ho gayi! 🔄 Ab fresh start karein~ 💕");
+      return;
+    }
+
+    // /mode
+    if (interaction.commandName === "mode") {
+      await interaction.reply(
+        isNsfwChannel
+          ? "🔥 Ye NSFW channel hai — 18+ mode ON hai!"
+          : "🌸 Ye normal channel hai — sirf SFW mode."
       );
-    }
-  }
-
-  if (interaction.commandName === "waifu") {
-    const type = interaction.options.getString("type") || "sfw_pic";
-    const isNsfwChannel = isNsfw;
-
-    // 18+ sirf NSFW channel mein — warna cute refusal
-    if (type !== "sfw_pic" && !isNsfwChannel) {
-      return interaction.reply("Hehe~ 🙈 ye sirf NSFW channel mein milega na! Wahan aao ✨");
+      return;
     }
 
-    await interaction.deferReply();
-    const wantGif = type === "nsfw_gif";
-    const url = await fetchWaifu(type !== "sfw_pic", wantGif);
-    if (url) {
-      await interaction.editReply({ content: "Ye lo~ 🌸✨", files: [url] });
+    // /gif
+    if (interaction.commandName === "gif") {
+      const query = interaction.options.getString("query");
+      await interaction.deferReply();
+      const url = await fetchGif(query, isNsfwChannel ? "off" : "high");
+      if (url) await interaction.editReply(url);
+      else await interaction.editReply("Uff~ 🥺 GIF nahi mili, dobara try karo na!");
+      return;
+    }
+
+    // /waifu
+    if (interaction.commandName === "waifu") {
+      const type = interaction.options.getString("type") || "sfw_pic";
+
+      // 18+ sirf NSFW channel mein — warna cute refusal
+      if (type !== "sfw_pic" && !isNsfwChannel) {
+        return interaction.reply(
+          "Hehe~ 🙈 ye sirf NSFW channel mein milega na! Wahan aao ✨"
+        );
+      }
+
+      await interaction.deferReply();
+      let url = null;
+      if (type === "sfw_pic") {
+        url = await fetchWaifu(false, false);
+      } else if (type === "nsfw_pic") {
+        url = await fetchWaifu(true, false);
+      } else if (type === "nsfw_gif") {
+        url = await fetchWaifu(true, true);
+      } else if (type === "booru") {
+        url = await fetchNekosMoe();
+      } else {
+        const wantGif = type === "hentai_gif";
+        const category = wantGif ? null : type; // hentai, ero, ahegao, yuri, nsfwNeko
+        url = await fetchHentai(category, wantGif);
+      }
+
+      if (url) {
+        await interaction.editReply({ content: "Ye lo~ 💦✨", files: [url] });
+      } else {
+        await interaction.editReply(
+          "Uff~ 🥺 sources busy hain, thodi der baad try karo na!"
+        );
+      }
+      return;
+    }
+  } catch (err) {
+    console.error("Interaction error:", err?.message || err);
+    const msg = "Uff~ 😳 kuch gadbad ho gayi, phir se try karo na! ✨";
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(msg).catch(() => {});
     } else {
-      await interaction.editReply("Uff~ 🥺 abhi kuch nahi mila, thodi der baad try karo na!");
-    }
-  }
-
-  if (interaction.commandName === "reset") {
-    history.delete(interaction.channelId);
-    await interaction.reply("Memory fresh ho gayi~ 🌸 Naya start karte hain! 💕");
-  }
-
-  if (interaction.commandName === "mode") {
-    if (isNsfw) {
-      await interaction.reply("😳💕 18+ girlfriend mode ON hai yahan~ hihi ✨");
-    } else {
-      await interaction.reply("🌸 Cute friendly mode ON hai! 18+ baatein ke liye NSFW channel mein aao~ 🙈");
+      await interaction.reply(msg).catch(() => {});
     }
   }
 });
 
-// ---------------- Start ----------------
+// ---------------- Login ----------------
 client.login(config.discordToken);
