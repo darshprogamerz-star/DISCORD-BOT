@@ -53,6 +53,17 @@ function pushHistory(channelId, role, content) {
 const GIF_COOLDOWN_MS = 3 * 60 * 1000; // 3 minute
 const lastAutoGif = new Map(); // channelId -> timestamp
 
+// ---------------- 18+ channel check (selected channel + DM) ----------------
+// Discord ka Age-Restricted toggle ki zaroorat nahi — config.js ke selected
+// channels (naam se) + DM mein 18+ allowed hai
+function isAdultAllowed(channel) {
+  if (!channel) return false;
+  if (channel.isDMBased?.()) return true; // DM mein hamesha 18+ allowed
+  if (config.nsfwChannelNames.includes((channel.name || "").toLowerCase())) return true;
+  if (config.nsfwChannelIds.includes(channel.id)) return true;
+  return false;
+}
+
 // ============================================================
 //  18+ IMAGE SOURCES
 // ============================================================
@@ -311,7 +322,7 @@ client.once("ready", startBot);
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const channelId = interaction.channelId;
-  const isNsfwChannel = interaction.channel?.isNSFW?.() || false;
+  const isNsfwChannel = isAdultAllowed(interaction.channel);
 
   try {
     // ---------------- /reset ----------------
@@ -324,8 +335,8 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "mode") {
       return interaction.reply(
         isNsfwChannel
-          ? "🔥 Ye NSFW channel hai — 18+ mode ON hai!"
-          : "🌸 Ye normal channel hai — sirf SFW mode"
+          ? "🔥 18+ mode ON hai yahan (selected channel / DM) — sab allowed! 💦"
+          : "🌸 18+ OFF yahan — 18+ sirf selected channel (#18plus) ya DM mein milega"
       );
     }
 
@@ -408,10 +419,11 @@ client.on("interactionCreate", async (interaction) => {
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-    if (!message.mentions.users.has(client.user.id)) return;
+    const isDM = message.channel.isDMBased?.() || false;
+    if (!isDM && !message.mentions.users.has(client.user.id)) return; // DM mein bina mention bhi reply
 
     const channelId = message.channelId;
-    const isNsfwChannel = message.channel?.isNSFW?.() || false;
+    const isNsfwChannel = isAdultAllowed(message.channel);
     const userText =
       message.cleanContent.replace(/<@!?\d+>/g, "").trim() || "Hi Pari!";
 
