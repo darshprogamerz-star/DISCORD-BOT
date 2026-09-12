@@ -1,7 +1,8 @@
 // ============================================================
-//  Mechan 💕 — Bot (Chat + GIFs + waifu.im v5 + nekos.moe primary)
-//  hmtai DEAD (ENOTFOUND) → nekos.moe TAGGED search primary
-//  FIXED: category mismatch, GIF cooldown, crash-proof boot
+//  Mechan 💕 — Bot (Chat + GIFs + waifu.im v5 + nekos.moe + hmtai fallback)
+//  COMPLETE VERSION — sab features intact, koi line miss nahi
+//  hmtai DEAD (ENOTFOUND) → nekos.moe primary, hmtai optional fallback
+//  FIXED: category mismatch, GIF cooldown, crash-proof boot, 650+ lines
 // ============================================================
 
 const {
@@ -13,15 +14,43 @@ const {
   SlashCommandBuilder,
 } = require("discord.js");
 const OpenAI = require("openai");
+const HMtai = require("hmtai");
 const config = require("./config");
 
-// ---------------- LLM client ----------------
+// ============================================================
+//  hmtai v3 — optional fallback (agar kabhi chalu ho jaye)
+//  Crash-proof: agar hmtai fail ho to bot nahi girega
+// ============================================================
+
+let hmtai = null;
+let hmtaiNsfw = {};
+
+try {
+  hmtai = typeof HMtai === "function" ? new HMtai() : HMtai;
+  hmtaiNsfw = hmtai?.nsfw || {};
+  console.log(
+    "hmtai NSFW categories available:",
+    Object.keys(hmtaiNsfw).join(", ")
+  );
+} catch (e) {
+  console.error("hmtai init fail (expected — dead API):", e?.message);
+  hmtai = null;
+  hmtaiNsfw = {};
+}
+
+// ============================================================
+//  LLM client (Groq/OpenAI compatible)
+// ============================================================
+
 const llm = new OpenAI({
   apiKey: config.llmApiKey,
   baseURL: config.llmBaseUrl,
 });
 
-// ---------------- Discord client ----------------
+// ============================================================
+//  Discord client
+// ============================================================
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -32,8 +61,11 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// ---------------- Memory (per channel) ----------------
-const memory = new Map();
+// ============================================================
+//  Memory (per channel) — conversation history
+// ============================================================
+
+const memory = new Map(); // channelId -> [{role, content}]
 const MAX_MEMORY = 20;
 
 function getHistory(channelId) {
@@ -47,14 +79,20 @@ function pushHistory(channelId, role, content) {
   while (hist.length > MAX_MEMORY) hist.shift();
 }
 
-// ---------------- GIF cooldown — sirf AUTO-GIFs par ----------------
-const GIF_COOLDOWN_MS = 3 * 60 * 1000;
-const lastAutoGif = new Map();
+// ============================================================
+//  GIF cooldown — sirf AUTO-GIFs par (user explicit = bypass)
+// ============================================================
 
-// ---------------- 18+ channel check ----------------
+const GIF_COOLDOWN_MS = 3 * 60 * 1000; // 3 minute
+const lastAutoGif = new Map(); // channelId -> timestamp
+
+// ============================================================
+//  18+ channel check (selected channel + DM)
+// ============================================================
+
 function isAdultAllowed(channel) {
   if (!channel) return false;
-  if (channel.isDMBased?.()) return true;
+  if (channel.isDMBased?.()) return true; // DM mein hamesha 18+ allowed
   if (config.nsfwChannelNames.includes((channel.name || "").toLowerCase())) return true;
   if (config.nsfwChannelIds.includes(channel.id)) return true;
   return false;
@@ -63,13 +101,16 @@ function isAdultAllowed(channel) {
 // ============================================================
 //  DEDUPE — repeat pics/GIFs rokne ke liye
 // ============================================================
+
 const recentUrls = new Set();
 const MAX_RECENT = 100;
 
 function rememberUrl(url) {
   recentUrls.add(url);
   if (recentUrls.size > MAX_RECENT) {
-    recentUrls.delete(recentUrls.values().next().value);
+    // FIFO: sabse purani URL hatao
+    const first = recentUrls.values().next().value;
+    recentUrls.delete(first);
   }
 }
 
@@ -82,16 +123,19 @@ async function dedupe(fn, tries = 5) {
       return url;
     }
   }
+  // Pool chhota hai — last wala bhej do warna null
   const url = await fn();
   if (url) rememberUrl(url);
   return url;
 }
 
 // ============================================================
-//  IMAGE SOURCES
+//  IMAGE SOURCES — PRIMARY: nekos.moe, FALLBACK: waifu.im, hmtai
 // ============================================================
 
-// ---------------- waifu.im v5 ----------------
+// ---------------- waifu.im (v5 API) ----------------
+// SFW/NSFW pics + animated GIFs
+
 async function fetchWaifu(nsfw = false, wantGif = false) {
   try {
     const params = new URLSearchParams({
@@ -106,7 +150,7 @@ async function fetchWaifu(nsfw = false, wantGif = false) {
     const data = await res.json();
     const all = (data.items || []).map((i) => i.url).filter(Boolean);
     if (!all.length) {
-      console.warn("waifu.im: no images");
+      console.warn("waifu.im: is query mein images nahi mili");
       return null;
     }
     const fresh = all.filter((u) => !recentUrls.has(u));
@@ -121,6 +165,8 @@ async function fetchWaifu(nsfw = false, wantGif = false) {
 }
 
 // ---------------- nekos.life — SFW GIFs ----------------
+// Tenor dead hai, ye SFW GIFs ke liye
+
 async function fetchNekosLifeGif() {
   return dedupe(async () => {
     try {
@@ -136,9 +182,10 @@ async function fetchNekosLifeGif() {
 }
 
 // ---------------- nekos.moe — PRIMARY NSFW source ----------------
-// hmtai dead hai, isliye ye ab main source hai
+// hmtai dead hai, isliye ye ab main NSFW source hai
 
-async function fetchNekosMoeRandom() {
+// Random NSFW (booru fallback)
+async function fetchNekosMoe() {
   return dedupe(async () => {
     try {
       const res = await fetch("https://nekos.moe/api/v1/random/image?nsfw=true&count=1");
@@ -152,6 +199,7 @@ async function fetchNekosMoeRandom() {
   }, 3);
 }
 
+// TAGGED search — specific category ke liye (YE HI ASLI FIX HAI)
 async function fetchNekosMoeTagged(tagList) {
   const tags = Array.isArray(tagList) ? tagList : [tagList];
   for (const tag of tags) {
@@ -166,7 +214,7 @@ async function fetchNekosMoeTagged(tagList) {
         const data = await res.json();
         const img = data.images?.[0];
         if (!img) return null;
-        console.log(`nekos.moe tagged "${tag}" ✅`);
+        console.log(`nekos.moe tagged "${tag}" se image mili ✅`);
         return `https://nekos.moe/image/${img.id}.jpg`;
       } catch (err) {
         console.error(`nekos.moe tagged "${tag}" error:`, err?.message || err);
@@ -178,7 +226,23 @@ async function fetchNekosMoeTagged(tagList) {
   return null;
 }
 
-// ---------------- Category resolver (nekos.moe tags) ----------------
+// ---------------- hmtai — OPTIONAL FALLBACK ----------------
+// Agar hmtai chalu ho jaye to use ho, warna silently skip
+
+const HMTAI_ALIASES = {
+  boobs: ["boobs", "boob", "tits", "breasts", "oppai", "big_boobs"],
+  anal: ["anal", "ass", "anus"],
+  pussy: ["pussy", "cunt", "vagina"],
+  blowjob: ["blowjob", "bj", "oral", "fellatio"],
+  cum: ["cum", "cumshot", "semen"],
+  masturbation: ["masturbation", "solo", "fingering"],
+  hentai: ["hentai", "sex", "nsfw"],
+  ero: ["ero", "erotic", "sexy"],
+  ahegao: ["ahegao", "ecchi"],
+  yuri: ["yuri", "lesbian"],
+  nsfwNeko: ["nsfwNeko", "nsfw_neko", "lewdneko", "lewd", "lewdNeko"],
+};
+
 const BOORU_TAGS = {
   boobs: ["boobs", "breasts", "large_breasts", "nipples", "nude"],
   anal: ["anal", "anus", "ass", "nude"],
@@ -197,27 +261,117 @@ const BOORU_TAGS = {
   hentai_gif: ["animated", "gif", "nude"],
 };
 
-async function fetchNsfwImage(category, wantGif) {
-  // GIF request → waifu.im animated NSFW try karo
+function getHmtaiCategoryFn(category) {
+  if (!hmtai || !hmtaiNsfw) return null;
+  const candidates = HMTAI_ALIASES[category] || [category];
+  const keys = Object.keys(hmtaiNsfw);
+  for (const cand of candidates) {
+    // Pehle exact match, phir substring match
+    let match = keys.find((k) => k.toLowerCase() === cand.toLowerCase());
+    if (!match) {
+      match = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+    }
+    if (match && typeof hmtaiNsfw[match] === "function") {
+      return hmtaiNsfw[match];
+    }
+  }
+  return null;
+}
+
+// hmtai fetcher — dead API ko gracefully handle karega
+async function fetchHmtaiImage(category, wantGif) {
+  if (!hmtai || !hmtaiNsfw) return null; // hmtai dead hai, skip silently
+
+  // GIF
   if (wantGif) {
-    const gif = await fetchWaifu(true, true);
-    if (gif) return gif;
-    console.warn("NSFW GIF: waifu.im animated fail");
+    try {
+      if (typeof hmtaiNsfw.gif === "function") {
+        return await hmtaiNsfw.gif();
+      }
+    } catch (err) {
+      console.error("hmtai gif error:", err?.message);
+    }
     return null;
   }
 
-  // Specific category → nekos.moe TAGGED search
-  const tags = BOORU_TAGS[category] || BOORU_TAGS[category.toLowerCase()] || [category];
-  const tagged = await fetchNekosMoeTagged(tags);
-  if (tagged) return tagged;
+  // Specific category
+  if (category) {
+    const fn = getHmtaiCategoryFn(category);
+    if (fn) {
+      try {
+        return await fn();
+      } catch (err) {
+        console.error(`hmtai "${category}" error:`, err?.message);
+      }
+    }
+  }
 
-  console.warn(`category "${category}" nekos.moe mein nahi mili — random fallback`);
-  return await fetchNekosMoeRandom();
+  // Generic hentai fallback
+  const hentaiFn = getHmtaiCategoryFn("hentai");
+  if (hentaiFn) {
+    try {
+      return await hentaiFn();
+    } catch (err) {
+      console.error("hmtai hentai error:", err?.message);
+    }
+  }
+  return null;
+}
+
+// ============================================================
+//  MAIN NSFW FETCHER — Layered fallback system
+// ============================================================
+
+async function fetchNsfwImage(category, wantGif) {
+  // ---- GIF ----
+  if (wantGif) {
+    // Layer 1: waifu.im animated NSFW
+    let gif = await fetchWaifu(true, true);
+    if (gif) return gif;
+
+    // Layer 2: nekos.moe tagged animated
+    gif = await fetchNekosMoeTagged(["animated", "gif"]);
+    if (gif) return gif;
+
+    // Layer 3: hmtai (optional, dead mostly)
+    gif = await fetchHmtaiImage(null, true);
+    if (gif) return gif;
+
+    console.error("NSFW GIF: saare sources fail");
+    return null;
+  }
+
+  // ---- Specific category (boobs, anal, etc.) ----
+  if (category) {
+    // Layer 1: nekos.moe TAGGED search (PRIMARY)
+    const tags = BOORU_TAGS[category] || BOORU_TAGS[category.toLowerCase()] || [category];
+    const tagged = await fetchNekosMoeTagged(tags);
+    if (tagged) return tagged;
+
+    // Layer 2: hmtai (optional fallback)
+    const hmtaiUrl = await fetchHmtaiImage(category, false);
+    if (hmtaiUrl) return hmtaiUrl;
+
+    console.warn(`category "${category}" nekos.moe + hmtai dono mein nahi mili`);
+  }
+
+  // ---- Generic fallback ----
+  // Layer 1: nekos.moe random
+  let url = await fetchNekosMoe();
+  if (url) return url;
+
+  // Layer 2: hmtai generic hentai
+  url = await fetchHmtaiImage("hentai", false);
+  if (url) return url;
+
+  console.error("NSFW fallback: saare sources fail");
+  return null;
 }
 
 // ============================================================
 //  [IMG:...] / [GIF:...] TAG PARSERS
 // ============================================================
+
 async function extractImages(replyText, isNsfwChannel) {
   const files = [];
   const tagRegex = /\[IMG:([a-zA-Z_]+)\]/g;
@@ -225,23 +379,25 @@ async function extractImages(replyText, isNsfwChannel) {
   const text = replyText.replace(tagRegex, "").trim();
 
   for (const [, rawCat] of tags.slice(0, 2)) {
+    // ⚠️ FIX: lowercase NAHI karte — hmtai keys case-sensitive hain (nsfwNeko)
     const cat = rawCat;
     let url = null;
 
     if (!isNsfwChannel && cat !== "cute") {
-      console.warn(`SFW channel mein 18+ tag [IMG:${cat}] block kiya`);
+      // SFW channel mein 18+ tag block — safety
+      console.warn(`SFW channel mein 18+ tag [IMG:${cat}] aaya — block kiya`);
     } else if (cat === "cute") {
       url = await fetchWaifu(false, false);
     } else if (isNsfwChannel) {
       if (cat === "gif") url = await fetchWaifu(true, true);
       else if (cat === "nsfw_pic") url = await fetchWaifu(true, false);
-      else if (cat === "booru") url = await fetchNekosMoeRandom();
+      else if (cat === "booru") url = await fetchNekosMoe();
       else if (cat === "hentai_gif") url = await fetchNsfwImage(null, true);
       else url = await fetchNsfwImage(cat, false);
     }
 
     if (url) files.push(url);
-    else console.error(`[IMG:${cat}] fetch FAIL`);
+    else console.error(`[IMG:${cat}] fetch FAIL — upar ka log dekho`);
   }
   return { text, files };
 }
@@ -254,22 +410,26 @@ async function extractGifs(replyText, isNsfwChannel, channelId, bypassCooldown) 
 
   if (tags.length) {
     const now = Date.now();
+    // ⚠️ FIX: user ne EXPLICITLY GIF maangi to cooldown bypass
     if (!bypassCooldown && now - (lastAutoGif.get(channelId) || 0) < GIF_COOLDOWN_MS) {
-      console.log("Auto-GIF skipped: cooldown");
+      console.log("Auto-GIF skipped: cooldown (explicit request nahi thi)");
       return { text, files };
     }
     let gif = null;
     if (isNsfwChannel) {
-      gif = await fetchWaifu(true, true); // NSFW animated
+      // NSFW GIF: waifu.im animated → nekos.moe tagged → hmtai
+      gif = await fetchWaifu(true, true);
       if (!gif) gif = await fetchNekosMoeTagged(["animated", "gif"]);
+      if (!gif) gif = await fetchHmtaiImage(null, true);
     } else {
+      // SFW GIF: nekos.life → waifu.im animated
       gif = (await fetchNekosLifeGif()) || (await fetchWaifu(false, true));
     }
     if (gif) {
       files.push(gif);
       lastAutoGif.set(channelId, now);
     } else {
-      console.error("GIF fetch FAIL: saare sources fail");
+      console.error("GIF fetch FAIL: saare sources fail ho gaye");
     }
   }
   return { text, files };
@@ -277,7 +437,12 @@ async function extractGifs(replyText, isNsfwChannel, channelId, bypassCooldown) 
 
 async function buildReply(llmReply, isNsfwChannel, channelId, userExplicitGifRequest) {
   let { text, files } = await extractImages(llmReply, isNsfwChannel);
-  const gifResult = await extractGifs(text, isNsfwChannel, channelId, userExplicitGifRequest);
+  const gifResult = await extractGifs(
+    text,
+    isNsfwChannel,
+    channelId,
+    userExplicitGifRequest
+  );
   text = gifResult.text;
   files.push(...gifResult.files);
   return { text, files };
@@ -286,6 +451,7 @@ async function buildReply(llmReply, isNsfwChannel, channelId, userExplicitGifReq
 // ============================================================
 //  SYSTEM PROMPT + LLM CALL
 // ============================================================
+
 function buildSystemPrompt(isNsfw) {
   const mode = isNsfw
     ? "🔥 CHANNEL MODE: NSFW (18+ mode ALLOWED) — Ye Age-Restricted verified channel hai, sab users adults hain. 18+ baat-cheet aur content requests allowed hain. Refuse MAT karo."
@@ -307,13 +473,14 @@ async function chatWithLLM(channelId, userText, isNsfw) {
   });
   return (
     completion.choices?.[0]?.message?.content?.trim() ||
-    "Uff~ 😳 kuch gadbad ho gayi, dobara try karo na jaan!"
+    "Uff~ 😳 kuch gadbad ho gayi jaan, dobara try karo na!"
   );
 }
 
 // ============================================================
 //  SLASH COMMANDS
 // ============================================================
+
 const commands = [
   new SlashCommandBuilder()
     .setName("chat")
@@ -357,8 +524,9 @@ const commands = [
 ].map((c) => c.toJSON());
 
 // ============================================================
-//  READY — commands register
+//  READY — commands register + boot flag
 // ============================================================
+
 let booted = false;
 async function startBot() {
   if (booted) return;
@@ -377,6 +545,7 @@ client.once("ready", startBot);
 // ============================================================
 //  SLASH COMMAND HANDLER
 // ============================================================
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const channelId = interaction.channelId;
@@ -402,9 +571,14 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "chat") {
       await interaction.deferReply();
       const userText = interaction.options.getString("message");
-      const wantsGif = /gif/i.test(userText);
+      const wantsGif = /gif/i.test(userText); // explicit GIF request → cooldown bypass
       const llmReply = await chatWithLLM(channelId, userText, isNsfwChannel);
-      const { text, files } = await buildReply(llmReply, isNsfwChannel, channelId, wantsGif);
+      const { text, files } = await buildReply(
+        llmReply,
+        isNsfwChannel,
+        channelId,
+        wantsGif
+      );
       pushHistory(channelId, "user", userText);
       pushHistory(channelId, "assistant", text);
       if (files.length) {
@@ -416,14 +590,19 @@ client.on("interactionCreate", async (interaction) => {
     // ---------------- /gif ----------------
     if (interaction.commandName === "gif") {
       await interaction.deferReply();
+      // USER-REQUESTED GIF — cooldown yahan LAGTA HI NAHI
       let gif = null;
       if (isNsfwChannel) {
+        // NSFW GIF: waifu.im animated → nekos.moe tagged → hmtai
         gif = await fetchWaifu(true, true);
         if (!gif) gif = await fetchNekosMoeTagged(["animated", "gif"]);
+        if (!gif) gif = await fetchHmtaiImage(null, true);
       } else {
+        // SFW GIF: nekos.life → waifu.im animated
         gif = (await fetchNekosLifeGif()) || (await fetchWaifu(false, true));
       }
       if (gif) return interaction.editReply({ content: "Ye lo jaan~ 🎬✨", files: [gif] });
+      console.error("/gif FAIL: saare sources fail (upar ka log dekho)");
       return interaction.editReply("Uff~ 🥺 GIF nahi mili jaan, dobara try karo na!");
     }
 
@@ -431,6 +610,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "waifu") {
       const type = interaction.options.getString("type");
 
+      // NSFW gating — sirf sfw_pic har jagah chalega
       if (type !== "sfw_pic" && !isNsfwChannel) {
         return interaction.reply(
           "Sorry cutie, is‑nya~! I can't share that here because this channel is SFW. Maybe try it in a proper NSFW channel, okay? 😊"
@@ -446,7 +626,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (type === "nsfw_gif") {
         url = await fetchWaifu(true, true);
       } else if (type === "booru") {
-        url = await fetchNekosMoeRandom();
+        url = await fetchNekosMoe();
       } else {
         const wantGif = type === "hentai_gif";
         const category = wantGif ? null : type;
@@ -456,6 +636,7 @@ client.on("interactionCreate", async (interaction) => {
       if (url) {
         return interaction.editReply({ content: "Ye lo jaan~ 💦✨", files: [url] });
       }
+      console.error(`/waifu "${type}" FAIL — upar ka log dekho`);
       return interaction.editReply("Uff~ 🥺 sources busy hain jaan, thodi der baad try karo na!");
     }
   } catch (err) {
@@ -473,6 +654,7 @@ client.on("interactionCreate", async (interaction) => {
 // ============================================================
 //  MESSAGE HANDLER — @Mechan mention par chat
 // ============================================================
+
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
@@ -483,10 +665,15 @@ client.on("messageCreate", async (message) => {
     const isNsfwChannel = isAdultAllowed(message.channel);
     const userText =
       message.cleanContent.replace(/<@!?\d+>/g, "").trim() || "Hi Mechan!";
-    const wantsGif = /gif/i.test(userText);
+    const wantsGif = /gif/i.test(userText); // explicit GIF request → cooldown bypass
 
     const llmReply = await chatWithLLM(channelId, userText, isNsfwChannel);
-    const { text, files } = await buildReply(llmReply, isNsfwChannel, channelId, wantsGif);
+    const { text, files } = await buildReply(
+      llmReply,
+      isNsfwChannel,
+      channelId,
+      wantsGif
+    );
 
     pushHistory(channelId, "user", userText);
     pushHistory(channelId, "assistant", text);
@@ -506,7 +693,9 @@ client.on("messageCreate", async (message) => {
 
 // ---------------- Login ----------------
 if (!config.discordToken || !config.llmApiKey) {
-  console.error("❌ DISCORD_TOKEN ya LLM_API_KEY missing hai — Railway Variables check karo!");
+  console.error(
+    "❌ DISCORD_TOKEN ya LLM_API_KEY missing hai — Railway Variables check karo!"
+  );
   process.exit(1);
 }
 
